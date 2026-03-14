@@ -10,6 +10,9 @@
 #include <escher/palette.h>
 #include <complex>
 #include <poincare/trigonometry.h>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 using namespace Poincare;
 
@@ -668,6 +671,22 @@ void CurveView::drawCartesianCurve(KDContext * ctx, KDRect rect, float xMin, flo
     return;
   }
   float tStep = pixelWidth();
+#ifdef PLATFORM_ESP32
+  {
+    Serial.printf("[CURVE] tStart=%f tEnd=%f tStep=%f rect=(%d,%d,%d,%d)\n",
+                  tStart, tEnd, tStep, rect.x(), rect.y(), rect.width(), rect.height());
+    // Test first few evaluations
+    for (int _t = 0; _t < 3; _t++) {
+      float tv = tStart + _t * tStep;
+      auto xy = xyFloatEvaluation(tv, model, context);
+      float px = floatToPixel(Axis::Horizontal, xy.x1());
+      float py = floatToPixel(Axis::Vertical, xy.x2());
+      Serial.printf("[CURVE] t=%f -> x=%f y=%f -> px=%f py=%f\n",
+                    tv, xy.x1(), xy.x2(), px, py);
+    }
+    Serial.flush();
+  }
+#endif
   drawCurve(ctx, rect, tStart, tEnd, tStep, xyFloatEvaluation, model, context, true, color, thick, colorUnderCurve, colorLowerBound, colorUpperBound, xyDoubleEvaluation);
 }
 
@@ -968,6 +987,11 @@ void CurveView::straightJoinDots(KDContext * ctx, KDRect rect, float pxf, float 
 }
 
 void CurveView::stampAtLocation(KDContext * ctx, KDRect rect, float pxf, float pyf, KDColor color, bool thick) const {
+#ifdef PLATFORM_ESP32
+  static int stampCount = 0;
+  static int stampDrawn = 0;
+  stampCount++;
+#endif
   /* The (pxf, pyf) coordinates are not generally locating the center of a
    * pixel. We use stampMask, which is one pixel wider and higher than
    * stampSize, in order to cover stampRect without aligning the pixels. Then
@@ -988,8 +1012,23 @@ void CurveView::stampAtLocation(KDContext * ctx, KDRect rect, float pxf, float p
   const KDCoordinate py = std::ceil(pyf);
   KDRect stampRect(px, py, stampSize, stampSize);
   if (!rect.intersects(stampRect)) {
+#ifdef PLATFORM_ESP32
+    if (stampCount <= 5) {
+      Serial.printf("[STAMP] #%d CLIPPED px=%f py=%f rect=(%d,%d,%d,%d)\n",
+                    stampCount, pxf, pyf, rect.x(), rect.y(), rect.width(), rect.height());
+      Serial.flush();
+    }
+#endif
     return;
   }
+#ifdef PLATFORM_ESP32
+  stampDrawn++;
+  if (stampDrawn <= 5 || stampDrawn % 100 == 0) {
+    Serial.printf("[STAMP] #%d DRAWN px=%d py=%d (total drawn=%d)\n",
+                  stampCount, px, py, stampDrawn);
+    Serial.flush();
+  }
+#endif
   uint8_t shiftedMask[stampSize][stampSize];
   KDColor workingBuffer[stampSize*stampSize];
   const float dx = px - pxf;

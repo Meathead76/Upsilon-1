@@ -6,6 +6,10 @@
 #include <poincare/undefined.h>
 #include "../exam_mode_configuration.h"
 #include <assert.h>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#include <poincare/tree_pool.h>
+#endif
 
 #if defined _FXCG || defined NSPIRE_NEWLIB
 #include <stddef.h>
@@ -108,6 +112,14 @@ ExpiringPointer<Calculation> CalculationStore::realCalculationAtIndex(int i) {
 
 // Pushes an expression in the store
 ExpiringPointer<Calculation> CalculationStore::push(const char * text, Context * context, HeightComputer heightComputer) {
+#ifdef PLATFORM_ESP32
+  {
+    auto * pool = Poincare::TreePool::sharedPool();
+    int poolNodes = pool->numberOfNodes();
+    Serial.printf("[CALC] push('%s') START poolNodes=%d\n", text, poolNodes);
+    Serial.flush();
+  }
+#endif
   emptyTrash();
   /* Compute ans now, before the buffer is updated and before the calculation
    * might be deleted */
@@ -161,7 +173,15 @@ ExpiringPointer<Calculation> CalculationStore::push(const char * text, Context *
     // Outputs hold exact output, approximate output and its duplicate
     constexpr static int numberOfOutputs = Calculation::k_numberOfExpressions - 1;
     Expression outputs[numberOfOutputs] = {Expression(), Expression(), Expression()};
+#ifdef PLATFORM_ESP32
+    Serial.printf("[CALC] ParseAndSimplify input='%s'\n", inputSerialization);
+    Serial.flush();
+#endif
     PoincareHelpers::ParseAndSimplifyAndApproximate(inputSerialization, &(outputs[0]), &(outputs[1]), context, GlobalPreferences::sharedGlobalPreferences()->isInExamModeSymbolic() ? Poincare::ExpressionNode::SymbolicComputation::ReplaceAllDefinedSymbolsWithDefinition : Poincare::ExpressionNode::SymbolicComputation::ReplaceAllSymbolsWithDefinitionsOrUndefined);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[CALC] ParseAndSimplify DONE\n");
+    Serial.flush();
+#endif
     if (ExamModeConfiguration::exactExpressionsAreForbidden(GlobalPreferences::sharedGlobalPreferences()->examMode()) && outputs[1].hasUnit()) {
       // Hide results with units on units if required by the exam mode configuration
       outputs[1] = Undefined::Builder();
@@ -169,6 +189,11 @@ ExpiringPointer<Calculation> CalculationStore::push(const char * text, Context *
     outputs[2] = outputs[1];
     int numberOfSignificantDigits = Poincare::PrintFloat::k_numberOfStoredSignificantDigits;
     for (int i = 0; i < numberOfOutputs; i++) {
+#ifdef PLATFORM_ESP32
+      Serial.printf("[CALC] serialize output[%d] uninit=%d...\n", i, outputs[i].isUninitialized());
+      Serial.flush();
+      delay(1); // yield to FreeRTOS
+#endif
       if (i == numberOfOutputs - 1) {
         numberOfSignificantDigits = Poincare::Preferences::sharedPreferences()->numberOfSignificantDigits();
       }
@@ -181,9 +206,19 @@ ExpiringPointer<Calculation> CalculationStore::push(const char * text, Context *
           return emptyStoreAndPushUndef(context, heightComputer);
         }
       }
+      char * serializedStart = beginingOfFreeSpace;
       beginingOfFreeSpace += strlen(beginingOfFreeSpace) + 1;
+#ifdef PLATFORM_ESP32
+      Serial.printf("[CALC] serialize output[%d] = '%.60s'\n", i, serializedStart);
+      Serial.flush();
+      delay(1); // yield to FreeRTOS
+#endif
     }
   }
+#ifdef PLATFORM_ESP32
+  Serial.printf("[CALC] serialization done, storing pointers...\n");
+  Serial.flush();
+#endif
   // Storing the pointer of the end of the new calculation
   memcpy(endOfFreeSpace-sizeof(Calculation*),&beginingOfFreeSpace,sizeof(beginingOfFreeSpace));
 
@@ -197,9 +232,27 @@ ExpiringPointer<Calculation> CalculationStore::push(const char * text, Context *
    * accordingly to the remaining size in the Poincare pool. Once it is, it
    * can't change anymore: the calculation heights are fixed which ensures that
    * scrolling computation is right. */
-  calculation->setHeights(
-      heightComputer(calculation.pointer(), false),
-      heightComputer(calculation.pointer(), true));
+#ifdef PLATFORM_ESP32
+  Serial.printf("[CALC] computing height (collapsed)...\n");
+  Serial.flush();
+  delay(1); // yield to FreeRTOS
+#endif
+  KDCoordinate h1 = heightComputer(calculation.pointer(), false);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[CALC] collapsed height=%d, computing expanded...\n", h1);
+  Serial.flush();
+  delay(1); // yield to FreeRTOS
+#endif
+  KDCoordinate h2 = heightComputer(calculation.pointer(), true);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[CALC] expanded height=%d\n", h2);
+  Serial.flush();
+#endif
+  calculation->setHeights(h1, h2);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[CALC] push() DONE\n");
+  Serial.flush();
+#endif
   return calculation;
 }
 
@@ -270,12 +323,41 @@ Expression CalculationStore::ansExpression(Context * context) {
 bool CalculationStore::pushSerializeExpression(Expression e, char * location, char * * newCalculationsLocation, int numberOfSignificantDigits) {
   assert(*newCalculationsLocation <= m_buffer + m_bufferSize);
   bool expressionIsPushed = false;
+#ifdef PLATFORM_ESP32
+  int loopIter = 0;
+  bool atBufferEnd = (*newCalculationsLocation >= m_buffer + m_bufferSize);
+  size_t initLocSize = *newCalculationsLocation - location;
+  Serial.printf("[PUSH] loc=%p end=%p locSize=%d atEnd=%d numCalc=%d uninit=%d\n",
+                location, *newCalculationsLocation, (int)initLocSize,
+                atBufferEnd, m_numberOfCalculations, e.isUninitialized());
+  Serial.flush();
+#endif
   while (true) {
     size_t locationSize = *newCalculationsLocation - location;
-    expressionIsPushed = (PoincareHelpers::Serialize(e, location, locationSize, numberOfSignificantDigits) < (int)locationSize-1);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[PUSH] iter=%d locSize=%d\n", loopIter, (int)locationSize);
+    Serial.flush();
+#endif
+    int serResult = PoincareHelpers::Serialize(e, location, locationSize, numberOfSignificantDigits);
+    expressionIsPushed = (serResult < (int)locationSize-1);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[PUSH] serResult=%d pushed=%d\n", serResult, expressionIsPushed);
+    Serial.flush();
+#endif
     if (expressionIsPushed || *newCalculationsLocation >= m_buffer + m_bufferSize) {
       break;
     }
+#ifdef PLATFORM_ESP32
+    if (++loopIter > 50) {
+      Serial.printf("[PUSH] SAFETY BREAK after %d iters! Writing 'undef'\n", loopIter);
+      Serial.flush();
+      // Write "undef" as fallback to prevent infinite loop
+      strlcpy(location, Poincare::Undefined::Name(), locationSize);
+      break;
+    }
+#else
+    // No safety limit on real hardware
+#endif
     *newCalculationsLocation = *newCalculationsLocation + deleteOldestCalculation();
     assert(*newCalculationsLocation <= m_buffer + m_bufferSize);
   }

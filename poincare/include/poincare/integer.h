@@ -88,6 +88,24 @@ public:
   Integer(const char * digits) : Integer(digits, strlen(digits), false) {}
   static Integer Overflow(bool negative) { return Integer(TreeNode::OverflowIdentifier, negative); }
 
+  /* Explicit copy/move to ensure m_negative and m_digit are copied.
+   * The Xtensa (ESP32) compiler sometimes fails to copy derived-class members
+   * when the base class (TreeHandle) has user-defined copy/move operators. */
+  Integer(const Integer & other) : TreeHandle(other), m_negative(other.m_negative), m_digit(other.m_digit) {}
+  Integer(Integer && other) : TreeHandle(std::move(other)), m_negative(other.m_negative), m_digit(other.m_digit) {}
+  Integer & operator=(const Integer & other) {
+    TreeHandle::operator=(other);
+    m_negative = other.m_negative;
+    m_digit = other.m_digit;
+    return *this;
+  }
+  Integer & operator=(Integer && other) {
+    TreeHandle::operator=(std::move(other));
+    m_negative = other.m_negative;
+    m_digit = other.m_digit;
+    return *this;
+  }
+
 #if POINCARE_TREE_LOG
   void logInteger(std::ostream & stream) const {
     if (isOverflow()) {

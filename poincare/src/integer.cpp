@@ -21,6 +21,9 @@ extern "C" {
 #include <assert.h>
 }
 #include <algorithm>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 #define __INT8_MAX_MINUS_1__ 0x7E
 
@@ -129,10 +132,17 @@ Integer::Integer(native_int_t i) : TreeHandle(TreeNode::NoNodeIdentifier) {
 
 Integer::Integer(double_native_int_t i) {
   double_native_uint_t j = i < 0 ? -i : i;
+#ifdef PLATFORM_ESP32
+  // Use memcpy to extract 32-bit halves - the shift/mask approach
+  // (j & 0xFFFFFFFF / j >> 32) produces wrong results on ESP32 Xtensa toolchain
+  native_uint_t d[2];
+  memcpy(d, &j, sizeof(j)); // Little-endian: d[0]=low, d[1]=high
+#else
   native_uint_t d[2] = {
     static_cast<native_uint_t>(j & 0xFFFFFFFF),
     static_cast<native_uint_t>(j >> 32)
   };
+#endif
   native_uint_t leastSignificantDigit = *d;
   native_uint_t mostSignificantDigit = *(d+1);
   uint8_t numberOfDigits = (mostSignificantDigit == 0) ? 1 : 2;
@@ -215,6 +225,32 @@ int Integer::serialize(char * buffer, int bufferSize, Base base) const {
 }
 
 int Integer::serializeInDecimal(char * buffer, int bufferSize) const {
+#ifdef PLATFORM_ESP32
+  // Fast path for inline integers — bypasses broken udiv on Xtensa
+  if (usesImmediateDigit()) {
+    int length = 0;
+    if (isZero()) {
+      buffer[0] = '0';
+      buffer[1] = 0;
+      return 1;
+    }
+    if (isNegative()) {
+      buffer[length++] = '-';
+    }
+    native_uint_t v = m_digit;
+    char tmp[11]; // max 10 digits for uint32_t + null
+    int dLen = 0;
+    while (v > 0) {
+      tmp[dLen++] = '0' + (char)(v % 10);
+      v /= 10;
+    }
+    for (int j = dLen - 1; j >= 0 && length < bufferSize - 1; j--) {
+      buffer[length++] = tmp[j];
+    }
+    buffer[length] = 0;
+    return length;
+  }
+#endif
   Integer base(10);
   Integer abs = *this;
   abs.setNegative(false);
@@ -327,6 +363,15 @@ T Integer::approximate() const {
      */
     return (T)0.0;
   }
+#ifdef PLATFORM_ESP32
+  /* The Xtensa toolchain produces incorrect results for the 64-bit shift/mask
+   * operations used below to construct IEEE 754 floats. For single-digit
+   * (inline) integers, just cast directly. */
+  if (usesImmediateDigit()) {
+    T result = (T)m_digit;
+    return m_negative ? -result : result;
+  }
+#endif
   assert(sizeof(T) == 4 || sizeof(T) == 8);
   /* We're generating an IEEE 754 compliant float(double).
   * We can tell that:
@@ -392,12 +437,30 @@ T Integer::approximate() const {
 
 int Integer::NumberOfBase10DigitsWithoutSign(const Integer & i) {
   assert(!i.isOverflow());
+#ifdef PLATFORM_ESP32
+  // Bypass broken udiv on ESP32 Xtensa toolchain for inline integers
+  if (i.usesImmediateDigit()) {
+    if (i.isZero()) return 0;
+    int count = 0;
+    native_uint_t v = i.m_digit;
+    while (v > 0) {
+      v /= 10;
+      count++;
+    }
+    return count;
+  }
+#endif
   int numberOfDigits = 1;
   Integer base(10);
   IntegerDivision d = udiv(i, base);
   while (!d.quotient.isZero()) {
     d = udiv(d.quotient, base);
     numberOfDigits++;
+#ifdef PLATFORM_ESP32
+    if (numberOfDigits > 50) {
+      return numberOfDigits;
+    }
+#endif
   }
   return numberOfDigits;
 }
@@ -1041,6 +1104,21 @@ Integer Integer::multiplyByPowerOfBase(uint8_t pow) const {
 
 
 IntegerDivision Integer::udiv(const Integer & numerator, const Integer & denominator) {
+#ifdef PLATFORM_ESP32
+  // Fast path: use simple C arithmetic for inline integers.
+  // The full algorithm below uses multiplyByPowerOf2/multiplyByPowerOfBase/usum
+  // which produce corrupt results on the Xtensa toolchain.
+  if (numerator.usesImmediateDigit() && denominator.usesImmediateDigit() &&
+      !numerator.isZero() && !denominator.isZero()) {
+    native_uint_t n = numerator.m_digit;
+    native_uint_t d = denominator.m_digit;
+    IntegerDivision result = {
+      .quotient = Integer((native_int_t)(n / d)),
+      .remainder = Integer((native_int_t)(n % d))
+    };
+    return result;
+  }
+#endif
   if (denominator.isOverflow()) {
     return {.quotient = Overflow(false), .remainder = Integer::Overflow(false)};
   }

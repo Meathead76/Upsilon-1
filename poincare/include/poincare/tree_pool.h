@@ -51,7 +51,11 @@ public:
   int numberOfNodes() const;
 
 private:
+#ifdef PLATFORM_ESP32
+  constexpr static int BufferSize = 32768;
+#else
   constexpr static int BufferSize = 16384;
+#endif
   constexpr static int MaxNumberOfNodes = BufferSize/sizeof(TreeNode);
   constexpr static int k_maxNodeOffset = BufferSize/ByteAlignment;
 

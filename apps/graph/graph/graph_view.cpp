@@ -2,6 +2,9 @@
 #include "../app.h"
 #include <assert.h>
 #include <algorithm>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 using namespace Shared;
 
@@ -32,10 +35,19 @@ void GraphView::drawRect(KDContext * ctx, KDRect rect) const {
     ContinuousFunctionCache * cch = functionStore->cacheAtIndex(i);
     Shared::ContinuousFunction::PlotType type = f->plotType();
     Poincare::Expression e = f->expressionReduced(context());
+#ifdef PLATFORM_ESP32
+    Serial.printf("[GRAPH] func %d type=%d exprType=%d isUndef=%d\n",
+                  i, (int)type, (int)e.type(), e.isUndefined());
+    Serial.flush();
+#endif
     if (e.isUndefined() || (
         type == Shared::ContinuousFunction::PlotType::Parametric &&
         e.childAtIndex(0).isUndefined() &&
         e.childAtIndex(1).isUndefined())) {
+#ifdef PLATFORM_ESP32
+      Serial.printf("[GRAPH] SKIPPING func %d (undefined)\n", i);
+      Serial.flush();
+#endif
       continue;
     }
     float tmin = f->tMin();
@@ -58,16 +70,28 @@ void GraphView::drawRect(KDContext * ctx, KDRect rect) const {
 
     if (type == Shared::ContinuousFunction::PlotType::Cartesian) {
       // Cartesian
+#ifdef PLATFORM_ESP32
+      Serial.printf("[GRAPH] drawCartesian tmin=%f tmax=%f color=0x%04x\n",
+                    tmin, tmax, (unsigned)f->color());
+      Serial.flush();
+#endif
       drawCartesianCurve(ctx, rect, tmin, tmax, [](float t, void * model, void * context) {
             ContinuousFunction * f = (ContinuousFunction *)model;
             Poincare::Context * c = (Poincare::Context *)context;
             return f->evaluateXYAtParameter(t, c);
-          }, f.operator->(), context(), f->color(), true, record == m_selectedRecord, m_highlightedStart, m_highlightedEnd,
+          }, f.operator->(), context(), f->color(), true, record == m_selectedRecord, m_highlightedStart, m_highlightedEnd
+#ifdef PLATFORM_ESP32
+          // Skip double evaluation on ESP32 — the Xtensa toolchain produces
+          // corrupt results that cause stamps to be placed at NaN coordinates
+          );
+#else
+          ,
           [](double t, void * model, void * context) {
             ContinuousFunction * f = (ContinuousFunction *)model;
             Poincare::Context * c = (Poincare::Context *)context;
             return f->evaluateXYAtParameter(t, c);
           });
+#endif
       /* Draw tangent */
       if (m_tangent && record == m_selectedRecord) {
         float tangentParameterA = f->approximateDerivative(m_curveViewCursor->x(), context());

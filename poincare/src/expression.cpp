@@ -13,6 +13,9 @@
 #include <utility>
 
 #include "parsing/parser.h"
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 namespace Poincare {
 
@@ -648,14 +651,59 @@ void Expression::ParseAndSimplifyAndApproximate(const char * text, Expression * 
   assert(simplifiedExpression);
   Expression exp = Parse(text, context, false);
   if (exp.isUninitialized()) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[EXPR] Parse FAILED for '%s'\n", text);
+    Serial.flush();
+#endif
     *simplifiedExpression = Undefined::Builder();
     *approximateExpression = Undefined::Builder();
     return;
   }
+#ifdef PLATFORM_ESP32
+  Serial.printf("[EXPR] Parse OK, type=%d nChildren=%d\n", (int)exp.type(), exp.numberOfChildren());
+  Serial.flush();
+#endif
   exp.simplifyAndApproximate(simplifiedExpression, approximateExpression, context, complexFormat, angleUnit, unitFormat, symbolicComputation, unitConversion);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[EXPR] after simplifyAndApproximate: simplified_uninit=%d approx_uninit=%d\n",
+                simplifiedExpression->isUninitialized(),
+                approximateExpression ? approximateExpression->isUninitialized() : -1);
+  if (!simplifiedExpression->isUninitialized()) {
+    Serial.printf("[EXPR] simplified type=%d\n", (int)simplifiedExpression->type());
+    // Test serialize right here
+    char testBuf[64];
+    int testResult = simplifiedExpression->serialize(testBuf, sizeof(testBuf),
+        Preferences::sharedPreferences()->displayMode(),
+        PrintFloat::k_numberOfStoredSignificantDigits);
+    Serial.printf("[EXPR] TEST serialize simplified: result=%d str='%.60s'\n", testResult, testBuf);
+    // Dump raw node info
+    TreeNode * sNode = simplifiedExpression->node();
+    Serial.printf("[EXPR] simplified node=%p id=%d\n", sNode, simplifiedExpression->identifier());
+    uint32_t * rawPtr = reinterpret_cast<uint32_t *>(sNode);
+    Serial.printf("[EXPR] simplified raw: %08x %08x %08x %08x\n", rawPtr[0], rawPtr[1], rawPtr[2], rawPtr[3]);
+  }
+  if (approximateExpression && !approximateExpression->isUninitialized()) {
+    Serial.printf("[EXPR] approx type=%d\n", (int)approximateExpression->type());
+    // Test serialize approximate too
+    char testBuf2[64];
+    int testResult2 = approximateExpression->serialize(testBuf2, sizeof(testBuf2),
+        Preferences::sharedPreferences()->displayMode(),
+        PrintFloat::k_numberOfStoredSignificantDigits);
+    Serial.printf("[EXPR] TEST serialize approx: result=%d str='%.60s'\n", testResult2, testBuf2);
+    TreeNode * aNode = approximateExpression->node();
+    Serial.printf("[EXPR] approx node=%p id=%d\n", aNode, approximateExpression->identifier());
+    uint32_t * rawPtr2 = reinterpret_cast<uint32_t *>(aNode);
+    Serial.printf("[EXPR] approx raw: %08x %08x %08x %08x\n", rawPtr2[0], rawPtr2[1], rawPtr2[2], rawPtr2[3]);
+  }
+  Serial.flush();
+#endif
   /* simplify might have been interrupted, in which case the resulting
    * expression is uninitialized, so we need to check that. */
   if (simplifiedExpression->isUninitialized()) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[EXPR] simplified was uninit, re-parsing\n");
+    Serial.flush();
+#endif
     *simplifiedExpression = Parse(text, context);
     if (approximateExpression) {
       *approximateExpression = simplifiedExpression->approximate<double>(context, complexFormat, angleUnit);
@@ -681,9 +729,18 @@ void makePositive(Expression * e, bool * isNegative) {
 
 void Expression::beautifyAndApproximateScalar(Expression * simplifiedExpression, Expression * approximateExpression, ExpressionNode::ReductionContext userReductionContext, Context * context, Preferences::ComplexFormat complexFormat, Preferences::AngleUnit angleUnit) {
   bool hasUnits = hasUnit();
+#ifdef PLATFORM_ESP32
+  bool isRealVal = isReal(context);
+  Serial.printf("[BEAUTIFY] type=%d isReal=%d hasUnits=%d\n", (int)type(), isRealVal, hasUnits);
+  Serial.flush();
+#endif
   /* Case 1: the reduced expression is ComplexCartesian or pure real, we can
    * take into account the complex format to display a+i*b or r*e^(i*th) */
   if ((type() == ExpressionNode::Type::ComplexCartesian || isReal(context)) && !hasUnits) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[BEAUTIFY] Case 1: ComplexCartesian path\n");
+    Serial.flush();
+#endif
     ComplexCartesian ecomplex = type() == ExpressionNode::Type::ComplexCartesian ? convert<ComplexCartesian>() : ComplexCartesian::Builder(*this, Rational::Builder(0));
     if (approximateExpression) {
       /* Step 1: Approximation
@@ -698,9 +755,37 @@ void Expression::beautifyAndApproximateScalar(Expression * simplifiedExpression,
       // To minimize the error on the approximation, we reduce the number of nodes in the expression by beautifying
       ecomplexClone.real().deepBeautify(userReductionContext);
       ecomplexClone.imag().deepBeautify(userReductionContext);
+#ifdef PLATFORM_ESP32
+      Serial.printf("[BEAUTIFY] approximating ComplexCartesian...\n");
+      Serial.flush();
+#endif
       *approximateExpression = ecomplexClone.approximate<double>(context, complexFormat, angleUnit);
+#ifdef PLATFORM_ESP32
+      {
+        Serial.printf("[BEAUTIFY] approximate done, type=%d\n", approximateExpression->isUninitialized() ? -1 : (int)approximateExpression->type());
+        if (!approximateExpression->isUninitialized()) {
+          TreeNode * aNode = approximateExpression->node();
+          Serial.printf("[BEAUTIFY] approx node=%p id=%d\n", aNode, approximateExpression->identifier());
+          uint32_t * raw = reinterpret_cast<uint32_t *>(aNode);
+          Serial.printf("[BEAUTIFY] CREATED raw: %08x %08x %08x %08x %08x %08x\n", raw[0], raw[1], raw[2], raw[3], raw[4], raw[5]);
+        }
+        Serial.flush();
+      }
+#endif
     }
     // Step 2: create the simplified expression with the required complex format
+#ifdef PLATFORM_ESP32
+    {
+      Serial.printf("[BEAUTIFY] before Step2, re-check approx node\n");
+      if (approximateExpression && !approximateExpression->isUninitialized()) {
+        TreeNode * aNode2 = approximateExpression->node();
+        Serial.printf("[BEAUTIFY] approx node=%p id=%d\n", aNode2, approximateExpression->identifier());
+        uint32_t * raw2 = reinterpret_cast<uint32_t *>(aNode2);
+        Serial.printf("[BEAUTIFY] BEFORE_STEP2 raw: %08x %08x %08x %08x %08x %08x\n", raw2[0], raw2[1], raw2[2], raw2[3], raw2[4], raw2[5]);
+      }
+      Serial.flush();
+    }
+#endif
     Expression ra = complexFormat == Preferences::ComplexFormat::Polar ?
       ecomplex.clone().convert<ComplexCartesian>().norm(userReductionContext).shallowReduce(userReductionContext) :
       ecomplex.real();
@@ -713,12 +798,35 @@ void Expression::beautifyAndApproximateScalar(Expression * simplifiedExpression,
     bool tbIsNegative = false;
     makePositive(&ra, &raIsNegative);
     makePositive(&tb, &tbIsNegative);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[BEAUTIFY] ra type=%d isUndef=%d isZero=%d isOne=%d neg=%d\n",
+                  (int)ra.type(), ra.isUndefined(), IsZero(ra), IsOne(ra), raIsNegative);
+    Serial.printf("[BEAUTIFY] tb type=%d isUndef=%d isZero=%d isOne=%d neg=%d\n",
+                  (int)tb.type(), tb.isUndefined(), IsZero(tb), IsOne(tb), tbIsNegative);
+    Serial.flush();
+#endif
     *simplifiedExpression = CreateComplexExpression(ra, tb, complexFormat, ra.isUndefined() || tb.isUndefined(), IsZero(ra), IsOne(ra), IsZero(tb), IsOne(tb), raIsNegative, tbIsNegative);
+#ifdef PLATFORM_ESP32
+    if (approximateExpression && !approximateExpression->isUninitialized()) {
+      TreeNode * aNode3 = approximateExpression->node();
+      uint32_t * raw3 = reinterpret_cast<uint32_t *>(aNode3);
+      Serial.printf("[BEAUTIFY] AFTER_STEP2 raw: %08x %08x %08x %08x %08x %08x\n", raw3[0], raw3[1], raw3[2], raw3[3], raw3[4], raw3[5]);
+      Serial.flush();
+    }
+#endif
   } else {
     /* Case 2: The reduced expression has a complex component that could not
      * be bubbled up. */
+#ifdef PLATFORM_ESP32
+    Serial.printf("[BEAUTIFY] Case 2: non-real/non-ComplexCartesian path\n");
+    Serial.flush();
+#endif
     // Step 1: beautifying
     *simplifiedExpression = deepBeautify(userReductionContext);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[BEAUTIFY] deepBeautify done, simplified type=%d\n", (int)simplifiedExpression->type());
+    Serial.flush();
+#endif
     // Step 2: approximation
     if (approximateExpression) {
       if (hasUnits) {
@@ -729,7 +837,15 @@ void Expression::beautifyAndApproximateScalar(Expression * simplifiedExpression,
         return;
       }
 
+#ifdef PLATFORM_ESP32
+      Serial.printf("[BEAUTIFY] Case 2: approximating...\n");
+      Serial.flush();
+#endif
       *approximateExpression = simplifiedExpression->approximate<double>(context, complexFormat, angleUnit);
+#ifdef PLATFORM_ESP32
+      Serial.printf("[BEAUTIFY] Case 2: approximate done, type=%d\n", approximateExpression->isUninitialized() ? -1 : (int)approximateExpression->type());
+      Serial.flush();
+#endif
     }
   }
 }
@@ -739,16 +855,42 @@ void Expression::simplifyAndApproximate(Expression * simplifiedExpression, Expre
   sSimplificationHasBeenInterrupted = false;
   // Step 1: we reduce the expression
   ExpressionNode::ReductionContext userReductionContext = ExpressionNode::ReductionContext(context, complexFormat, angleUnit, unitFormat, ExpressionNode::ReductionTarget::User, symbolicComputation, unitConversion);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[SIMP] reduce(User) start, type=%d\n", (int)type());
+  Serial.flush();
+#endif
   Expression e = clone().reduce(userReductionContext);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[SIMP] reduce(User) done, interrupted=%d, result type=%d uninit=%d\n",
+                sSimplificationHasBeenInterrupted, e.isUninitialized() ? -1 : (int)e.type(), e.isUninitialized());
+  Serial.flush();
+#endif
   if (sSimplificationHasBeenInterrupted) {
     sSimplificationHasBeenInterrupted = false;
+#ifdef PLATFORM_ESP32
+    Serial.printf("[SIMP] retrying with SystemForApproximation\n");
+    Serial.flush();
+#endif
     ExpressionNode::ReductionContext systemReductionContext = ExpressionNode::ReductionContext(context, complexFormat, angleUnit, unitFormat, ExpressionNode::ReductionTarget::SystemForApproximation, symbolicComputation, unitConversion);
     e = reduce(systemReductionContext);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[SIMP] reduce(System) done, interrupted=%d, result type=%d uninit=%d\n",
+                  sSimplificationHasBeenInterrupted, e.isUninitialized() ? -1 : (int)e.type(), e.isUninitialized());
+    Serial.flush();
+#endif
   }
   *simplifiedExpression = Expression();
   if (sSimplificationHasBeenInterrupted) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[SIMP] interrupted, returning early\n");
+    Serial.flush();
+#endif
     return;
   }
+#ifdef PLATFORM_ESP32
+  Serial.printf("[SIMP] beautifyAndApproximate, e type=%d\n", (int)e.type());
+  Serial.flush();
+#endif
   // Step 2: we approximate and beautify the reduced expression
   /* Case 1: the reduced expression is a matrix: We scan the matrix children to
    * beautify them with the right complex format. */

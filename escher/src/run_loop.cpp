@@ -1,6 +1,9 @@
 #include <escher/run_loop.h>
 #include <kandinsky/font.h>
 #include <assert.h>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 RunLoop::RunLoop() :
   m_time(0),
@@ -64,7 +67,15 @@ bool RunLoop::step() {
       return true;
     }
 #endif
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DISPATCH] event id=%d\n", (int)(uint8_t)event);
+    Serial.flush();
+#endif
     dispatchEvent(event);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DISPATCH] done\n");
+    Serial.flush();
+#endif
   }
 
   return event != Ion::Events::Termination;

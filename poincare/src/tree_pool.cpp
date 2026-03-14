@@ -8,6 +8,9 @@
 #include <stdint.h>
 #include <poincare_layouts.h>
 #include <poincare_nodes.h>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 namespace Poincare {
 
@@ -115,6 +118,11 @@ int TreePool::numberOfNodes() const {
 void * TreePool::alloc(size_t size) {
   size = Helpers::AlignedSize(size, ByteAlignment);
   if (m_cursor + size > buffer() + BufferSize) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[POOL] FULL! used=%d/%d requesting=%d\n",
+                  (int)(m_cursor - buffer()), BufferSize, (int)size);
+    Serial.flush();
+#endif
     ExceptionCheckpoint::Raise();
   }
   void * result = m_cursor;

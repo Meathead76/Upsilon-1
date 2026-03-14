@@ -12,6 +12,9 @@
 #include <cmath>
 #include <utility>
 #include <algorithm>
+#ifdef PLATFORM_ESP32
+#include <Arduino.h>
+#endif
 
 namespace Poincare {
 
@@ -130,6 +133,11 @@ int DecimalNode::serialize(char * buffer, int bufferSize, Preferences::PrintFloa
 }
 
 int DecimalNode::convertToText(char * buffer, int bufferSize, Preferences::PrintFloatMode mode, int numberOfSignificantDigits) const {
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] convertToText bufSize=%d mode=%d nSigDig=%d neg=%d exp=%d nDigits=%d\n",
+                bufferSize, (int)mode, numberOfSignificantDigits, m_negative, m_exponent, m_numberOfDigitsInMantissa);
+  Serial.flush();
+#endif
   if (bufferSize == 0) {
     return -1;
   }
@@ -146,12 +154,43 @@ int DecimalNode::convertToText(char * buffer, int bufferSize, Preferences::Print
 
   // Round the integer if m_mantissa > 10^numberOfSignificantDigits-1
   char tempBuffer[PrintFloat::k_numberOfStoredSignificantDigits+1];
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] getting unsignedMantissa...\n");
+  Serial.flush();
+#endif
+  // Dump raw mantissa data before constructing Integer
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] raw mantissa words:");
+  for (int _i = 0; _i < m_numberOfDigitsInMantissa; _i++) {
+    Serial.printf(" [%d]=0x%08x", _i, m_mantissa[_i]);
+  }
+  Serial.printf("\n");
+  Serial.flush();
+#endif
   Integer m = unsignedMantissa();
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] got mantissa nDigits=%d, computing NumberOfBase10Digits...\n", m.numberOfDigits());
+  Serial.flush();
+#endif
   int numberOfDigitsInMantissa = Integer::NumberOfBase10DigitsWithoutSign(m);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] numberOfDigitsInMantissa=%d\n", numberOfDigitsInMantissa);
+  Serial.flush();
+#endif
   if (numberOfDigitsInMantissa > numberOfSignificantDigits) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DEC] rounding: nDigits=%d > nSigDig=%d\n", numberOfDigitsInMantissa, numberOfSignificantDigits);
+    Serial.flush();
+#endif
+#ifdef PLATFORM_ESP32
+    IntegerDivision d = Integer::Division(m, Integer((native_int_t)std::pow(10.0, numberOfDigitsInMantissa - numberOfSignificantDigits)));
+    m = d.quotient;
+    if (Integer::NaturalOrder(d.remainder, Integer((native_int_t)(5.0*std::pow(10.0, numberOfDigitsInMantissa-numberOfSignificantDigits-1)))) >= 0) {
+#else
     IntegerDivision d = Integer::Division(m, Integer((int64_t)std::pow(10.0, numberOfDigitsInMantissa - numberOfSignificantDigits)));
     m = d.quotient;
     if (Integer::NaturalOrder(d.remainder, Integer((int64_t)(5.0*std::pow(10.0, numberOfDigitsInMantissa-numberOfSignificantDigits-1)))) >= 0) {
+#endif
       m = Integer::Addition(m, Integer(1));
       // if 9999 was rounded to 10000, we need to update exponent and mantissa
       if (Integer::NumberOfBase10DigitsWithoutSign(m) > numberOfSignificantDigits) {
@@ -159,7 +198,15 @@ int DecimalNode::convertToText(char * buffer, int bufferSize, Preferences::Print
         m = Integer::Division(m, Integer(10)).quotient;
       }
     }
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DEC] rounding done\n");
+    Serial.flush();
+#endif
   }
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] before removeZeroes\n");
+  Serial.flush();
+#endif
   int exponentForEngineeringNotation = 0;
   int minimalNumberOfMantissaDigits = -1;
   bool removeZeroes = true;
@@ -179,7 +226,15 @@ int DecimalNode::convertToText(char * buffer, int bufferSize, Preferences::Print
    * rounding. For example 1.999 with 3 significant digits: the mantissa 1999 is
    * rounded to 2000. To avoid printing 2.000, we removeZeroAtTheEnd here. */
   if (removeZeroes) {
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DEC] removeZeroAtTheEnd...\n");
+    Serial.flush();
+#endif
     removeZeroAtTheEnd(&m, minimalNumberOfMantissaDigits);
+#ifdef PLATFORM_ESP32
+    Serial.printf("[DEC] removeZeroAtTheEnd done\n");
+    Serial.flush();
+#endif
   }
 
   // Print the sign
@@ -192,8 +247,16 @@ int DecimalNode::convertToText(char * buffer, int bufferSize, Preferences::Print
     if (currentChar >= bufferSize-1) { return bufferSize-1; }
   }
 
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] serializing mantissa Integer...\n");
+  Serial.flush();
+#endif
   // Serialize the mantissa
   int mantissaLength = m.serialize(tempBuffer, PrintFloat::k_numberOfStoredSignificantDigits+1);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC] mantissa serialized: len=%d str='%.30s'\n", mantissaLength, tempBuffer);
+  Serial.flush();
+#endif
 
   // Assert that m is not +/-inf
   assert(strcmp(tempBuffer, Infinity::Name()) != 0);
@@ -403,37 +466,69 @@ template <typename T>
 Decimal Decimal::Builder(T f) {
   assert(!std::isnan(f) && !std::isinf(f));
   int exp = IEEE754<T>::exponentBase10(f);
-  /* We keep 7 significant digits for if the the Decimal was built from a float
-   * and 14 significant digits if it was built from a double. This roughly
-   * correspond to the respective precision of float and double. */
   int numberOfSignificantDigits = sizeof(T) == sizeof(float) ? PrintFloat::k_numberOfPrintedSignificantDigits : PrintFloat::k_numberOfStoredSignificantDigits;
-  /* mantissa = f*10^(-exponent+numberOfSignificantDigits-1). We compute
-   * this operations in 2 steps as
-   * 10^(-exponent+numberOfSignificantDigits+1) can be infinity.*/
+#ifdef PLATFORM_ESP32
+  // ESP32 Xtensa toolchain has broken 64-bit shift/mask operations in
+  // Integer(int64_t), so cap mantissa to 9 digits to fit in int32_t.
+  if (numberOfSignificantDigits > 9) {
+    numberOfSignificantDigits = 9;
+  }
+#endif
   double mantissaf = f * std::pow(10.0, (double)(-exp));
   mantissaf = mantissaf * std::pow((double)10.0, (double)(numberOfSignificantDigits-1));
-  /* If m > 99999999999999.5 or 9999999,5, the mantissa stored will be 1 (as we keep only
-   * 14 significative numbers from double. In that case, the exponent must be
-   * increment as well. */
-  static double biggestMantissaFromDouble = std::pow((double)10.0, (double)(numberOfSignificantDigits))-0.5;
-  if (std::fabs(mantissaf) >= biggestMantissaFromDouble) {
+  double biggestMantissa = std::pow((double)10.0, (double)(numberOfSignificantDigits))-0.5;
+  if (std::fabs(mantissaf) >= biggestMantissa) {
     exp++;
   }
+#ifdef PLATFORM_ESP32
+  int32_t mantissaI = (int32_t)(std::round(mantissaf));
+  // Remove trailing zeros manually — removeZeroAtTheEnd corrupts Integers on ESP32
+  // due to Xtensa toolchain bugs with struct member copy in assignment operators
+  while (mantissaI != 0 && mantissaI % 10 == 0) {
+    mantissaI /= 10;
+  }
+  Integer m = Integer((native_int_t)mantissaI);
+#else
   Integer m = Integer((int64_t)(std::round(mantissaf)));
-  /* We get rid of extra 0 at the end of the mantissa. */
   removeZeroAtTheEnd(&m);
+#endif
   return Decimal::Builder(m, exp);
 }
 
 /* We do not get rid of the useless 0s ending the mantissa here because we want
  * to keep them if they were entered by the user. */
 Decimal Decimal::Builder(Integer m, int e) {
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC.BV] BY-VALUE copy: nDigits=%d digits[0]=0x%08x id=0x%04x\n",
+                m.numberOfDigits(), m.numberOfDigits() > 0 ? m.digits()[0] : 0, m.identifier());
+  Serial.flush();
+#endif
   return Decimal::Builder(DecimalSize(m.numberOfDigits()), m, e);
 }
 
 Decimal Decimal::Builder(size_t size, const Integer & m, int e) {
   void * bufferNode = TreePool::sharedPool()->alloc(size);
+#ifdef PLATFORM_ESP32
+  Serial.printf("[DEC.Build] alloc=%p size=%d nDig=%d exp=%d neg=%d\n", bufferNode, (int)size, m.numberOfDigits(), e, m.isNegative());
+  if (m.numberOfDigits() > 0) {
+    const native_uint_t * d = m.digits();
+    Serial.printf("[DEC.Build] src digits:");
+    for (int _i = 0; _i < m.numberOfDigits() && _i < 4; _i++) {
+      Serial.printf(" [%d]=0x%08x", _i, d[_i]);
+    }
+    Serial.printf("\n");
+  }
+  Serial.flush();
+#endif
   DecimalNode * node = new (bufferNode) DecimalNode(m.digits(), m.numberOfDigits(), e, m.isNegative());
+#ifdef PLATFORM_ESP32
+  {
+    uint32_t * raw = reinterpret_cast<uint32_t *>(node);
+    Serial.printf("[DEC.Build] node raw: %08x %08x %08x %08x %08x %08x %08x\n",
+                  raw[0], raw[1], raw[2], raw[3], raw[4], raw[5], raw[6]);
+    Serial.flush();
+  }
+#endif
   TreeHandle h = TreeHandle::BuildWithGhostChildren(node);
   return static_cast<Decimal &>(h);
 }
